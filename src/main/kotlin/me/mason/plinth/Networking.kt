@@ -97,6 +97,8 @@ interface Write {
     suspend fun string(value: String, charset: Charset = Charsets.UTF_8)
 }
 
+interface Connection : Read, Write
+
 val CONNECTION_STUB = object : Connection {
     override suspend fun byte(): Byte = throw UnconnectedException()
     override suspend fun short(): Short = throw UnconnectedException()
@@ -111,8 +113,6 @@ val CONNECTION_STUB = object : Connection {
     override suspend fun bytes(value: ByteArray) = throw UnconnectedException()
     override suspend fun string(value: String, charset: Charset) = throw UnconnectedException()
 }
-
-interface Connection : Read, Write
 
 fun AsynchronousSocketChannel.connection(maxBuffer: Int = Short.MAX_VALUE.toInt()): Connection {
     val channel = this
@@ -172,6 +172,7 @@ interface Server {
     suspend fun onConnect(block: suspend Connection.(Int) -> (Unit))
 }
 
+//TODO: handle disconnecting
 suspend fun AsynchronousChannelGroup.server(
     address: InetSocketAddress,
     max: Int = 256,
@@ -188,7 +189,7 @@ suspend fun AsynchronousChannelGroup.server(
         override val connections = Array(max) { CONNECTION_STUB }
         override suspend fun onConnect(block: suspend Connection.(Int) -> Unit) = whenConnect.plusAssign(block)
     }
-    CoroutineScope(coroutineContext).launch {
+    CoroutineScope(Dispatchers.IO).launch {
         while (isActive) {
             suspendCoroutine { continuation ->
                 channel.accept(null, object : CompletionHandler<AsynchronousSocketChannel, Void?> {
