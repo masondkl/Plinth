@@ -120,7 +120,7 @@ fun AsynchronousSocketChannel.connection(maxBuffer: Int = Short.MAX_VALUE.toInt(
     val write = ByteBuffer.allocate(maxBuffer)
     val readLock = Mutex()
     val writeLock = Mutex()
-    var readMark = 0 // cant access mark without vm option and reflection
+    var readMark = 0 // cant access mark value in Buffer without vm option and reflection
     val setReadMark: (Int) -> (Unit) = { readMark = it }
     val getReadMark: () -> (Int) = { readMark }
     return object : Connection {
@@ -137,29 +137,29 @@ fun AsynchronousSocketChannel.connection(maxBuffer: Int = Short.MAX_VALUE.toInt(
             channel.read(read, setReadMark, getReadMark, 8, ByteBuffer::getLong)
         }
         //TODO: make this one nio operation later
-        override suspend fun bytes(amount: Int): ByteArray {
-            return ByteArray(amount) { byte() }
+        override suspend fun bytes(amount: Int): ByteArray = readLock.withLock {
+            ByteArray(amount) { byte() }
         }
-        override suspend fun string(charset: Charset): String {
-            return String(bytes(int()))
+        override suspend fun string(charset: Charset): String = readLock.withLock {
+            String(bytes(int()))
         }
         override suspend fun byte(value: Byte) = writeLock.withLock {
             channel.write(write, ByteBuffer::put, value)
         }
-        override suspend fun short(value: Short) {
+        override suspend fun short(value: Short) = writeLock.withLock {
             channel.write(write, ByteBuffer::putShort, value)
         }
-        override suspend fun int(value: Int) {
+        override suspend fun int(value: Int) = writeLock.withLock {
             channel.write(write, ByteBuffer::putInt, value)
         }
-        override suspend fun long(value: Long) {
+        override suspend fun long(value: Long) = writeLock.withLock {
             channel.write(write, ByteBuffer::putLong, value)
         }
         //TODO: make this one nio operation later
-        override suspend fun bytes(value: ByteArray) {
+        override suspend fun bytes(value: ByteArray) = writeLock.withLock {
             value.forEach { byte(it) }
         }
-        override suspend fun string(value: String, charset: Charset) {
+        override suspend fun string(value: String, charset: Charset) = writeLock.withLock {
             int(value.length)
             bytes(value.toByteArray(charset))
         }
