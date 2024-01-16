@@ -29,21 +29,51 @@ interface Write {
 
 interface Connection : Read, Write
 
-val connection = group.client(address)
-//do what you like with the connection
+suspend fun AsynchronousChannelGroup.client(
+    address: InetSocketAddress,
+    maxBuffer: Int = Short.MAX_VALUE.toInt(),
+    block: suspend Connection.() -> (Unit)
+): Unit
+
+group.client(address) {
+    //do what you like with the connection
+}
 ```
 
 Servers which automatically collect connections may be created as follows.
 
 ```kt
 interface Server {
-    val active: Int
+    val active: BitSet
     val connections: Array<Connection>
+    suspend fun forActive(block: suspend Connection.(Int) -> (Unit))
     suspend fun onConnect(block: suspend Connection.(Int) -> (Unit))
+    suspend fun onDisconnect(block: suspend (Int) -> (Unit))
 }
 
-val server = group.server(address)
-server.onConnect { index ->
-    //do what you like with the connection
+suspend fun AsynchronousChannelGroup.server(
+    address: InetSocketAddress,
+    maxConnections: Int = 256,
+    maxBuffer: Int = Short.MAX_VALUE.toInt(),
+    block: suspend Server.() -> (Unit)
+): Unit
+
+group.server(address) {
+    onConnect { index -> 
+        //do what you like with the connection
+    }
+    onDisconnect { index ->
+        //cannot perform operations with the connection as it is closed here, but the index is still provided
+    }
+}
+```
+
+You may perform operations such as notifying other clients that a connection has been closed
+
+```kt
+server.onDisconnect { disconnected ->
+    server.forActive { _ ->
+        //notify
+    }
 }
 ```

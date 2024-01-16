@@ -3,25 +3,28 @@ package me.mason.plinth
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.io.EOFException
+import java.io.IOException
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.AsynchronousChannelGroup
 import java.nio.channels.AsynchronousServerSocketChannel
 import java.nio.channels.AsynchronousSocketChannel
 import java.nio.channels.CompletionHandler
+import java.nio.channels.NotYetConnectedException
 import java.nio.charset.Charset
 import java.util.*
-import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.*
-
-class UnconnectedException : IllegalAccessError()
 
 suspend fun <T> AsynchronousSocketChannel.read(
     buffer: ByteBuffer,
     setReadMark: (Int) -> (Unit),
     getReadMark: () -> (Int),
     size: Int,
-    method: ByteBuffer.() -> (T)
+    method: ByteBuffer.() -> (T),
+    server: Server? = null,
+    index: Int? = null,
+    disconnectLock: Mutex? = null
 ): T {
     if (buffer.position() - getReadMark() >= size) {
         val before = buffer.position()
@@ -37,15 +40,25 @@ suspend fun <T> AsynchronousSocketChannel.read(
             setReadMark(0)
         }
         while(buffer.position() - getReadMark() < size) {
-            suspendCoroutine {
-                read(buffer, null, object : CompletionHandler<Int, Void?> {
-                    override fun completed(count: Int, attachment: Void?) {
-                        it.resume(Unit)
-                    }
-                    override fun failed(throwable: Throwable, attachment: Void?) {
-                        it.resumeWithException(throwable)
-                    }
-                })
+            try {
+                suspendCoroutine<Unit> {
+                    read(buffer, null, object : CompletionHandler<Int, Void?> {
+                        override fun completed(count: Int, attachment: Void?) {
+                            if (count == -1) {
+                                it.resumeWithException(EOFException())
+                                return
+                            }
+                            it.resume(Unit)
+                        }
+                        override fun failed(throwable: Throwable, attachment: Void?) {
+                            it.resumeWithException(throwable)
+                        }
+                    })
+                }
+            } catch (throwable: Throwable) {
+                if (server != null && index != null && disconnectLock != null) {
+                    disconnectLock.withLock { server.active.clear(index) }
+                }; throw throwable // I guess rethrow?
             }
         }
         val before = buffer.position()
@@ -61,20 +74,29 @@ suspend fun <T> AsynchronousSocketChannel.read(
 suspend fun <T> AsynchronousSocketChannel.write(
     buffer: ByteBuffer,
     method: ByteBuffer.(T) -> (Unit),
-    value: T
+    value: T,
+    server: Server? = null,
+    index: Int? = null,
+    disconnectLock: Mutex? = null
 ) {
     buffer.method(value)
     buffer.flip()
-    suspendCoroutine {
-        write(buffer, null, object : CompletionHandler<Int, Void?> {
-            override fun completed(count: Int, attachment: Void?) {
-                //TODO: handle didn't write all
-                it.resume(Unit)
-            }
-            override fun failed(throwable: Throwable, attachment: Void?) {
-                it.resumeWithException(throwable)
-            }
-        })
+    try {
+        suspendCoroutine<Unit> {
+            write(buffer, null, object : CompletionHandler<Int, Void?> {
+                override fun completed(count: Int, attachment: Void?) {
+                    //TODO: handle didn't write all
+                    it.resume(Unit)
+                }
+                override fun failed(throwable: Throwable, attachment: Void?) {
+                    it.resumeWithException(throwable)
+                }
+            })
+        }
+    } catch (throwable: Throwable) {
+        if (server != null && index != null && disconnectLock != null) {
+            disconnectLock.withLock { server.active.clear(index) }
+        }; throw throwable // I guess rethrow?
     }
     buffer.clear()
 }
@@ -100,21 +122,26 @@ interface Write {
 interface Connection : Read, Write
 
 val CONNECTION_STUB = object : Connection {
-    override suspend fun byte(): Byte = throw UnconnectedException()
-    override suspend fun short(): Short = throw UnconnectedException()
-    override suspend fun int(): Int = throw UnconnectedException()
-    override suspend fun long(): Long = throw UnconnectedException()
-    override suspend fun bytes(amount: Int): ByteArray = throw UnconnectedException()
-    override suspend fun string(charset: Charset): String = throw UnconnectedException()
-    override suspend fun byte(value: Byte) = throw UnconnectedException()
-    override suspend fun short(value: Short) = throw UnconnectedException()
-    override suspend fun int(value: Int) = throw UnconnectedException()
-    override suspend fun long(value: Long) = throw UnconnectedException()
-    override suspend fun bytes(value: ByteArray) = throw UnconnectedException()
-    override suspend fun string(value: String, charset: Charset) = throw UnconnectedException()
+    override suspend fun byte(): Byte = throw NotYetConnectedException()
+    override suspend fun short(): Short = throw NotYetConnectedException()
+    override suspend fun int(): Int = throw NotYetConnectedException()
+    override suspend fun long(): Long = throw NotYetConnectedException()
+    override suspend fun bytes(amount: Int): ByteArray = throw NotYetConnectedException()
+    override suspend fun string(charset: Charset): String = throw NotYetConnectedException()
+    override suspend fun byte(value: Byte) = throw NotYetConnectedException()
+    override suspend fun short(value: Short) = throw NotYetConnectedException()
+    override suspend fun int(value: Int) = throw NotYetConnectedException()
+    override suspend fun long(value: Long) = throw NotYetConnectedException()
+    override suspend fun bytes(value: ByteArray) = throw NotYetConnectedException()
+    override suspend fun string(value: String, charset: Charset) = throw NotYetConnectedException()
 }
 
-fun AsynchronousSocketChannel.connection(maxBuffer: Int = Short.MAX_VALUE.toInt()): Connection {
+fun AsynchronousSocketChannel.connection(
+    maxBuffer: Int = Short.MAX_VALUE.toInt(),
+    server: Server? = null,
+    index: Int? = null,
+    disconnectLock: Mutex? = null
+): Connection {
     val channel = this
     val read = ByteBuffer.allocate(maxBuffer)
     val write = ByteBuffer.allocate(maxBuffer)
@@ -125,16 +152,16 @@ fun AsynchronousSocketChannel.connection(maxBuffer: Int = Short.MAX_VALUE.toInt(
     val getReadMark: () -> (Int) = { readMark }
     return object : Connection {
         override suspend fun byte(): Byte = readLock.withLock {
-            channel.read(read, setReadMark, getReadMark, 1, ByteBuffer::get)
+            channel.read(read, setReadMark, getReadMark, 1, ByteBuffer::get, server, index, disconnectLock)
         }
         override suspend fun short(): Short = readLock.withLock {
-            channel.read(read, setReadMark, getReadMark, 2, ByteBuffer::getShort)
+            channel.read(read, setReadMark, getReadMark, 2, ByteBuffer::getShort, server, index, disconnectLock)
         }
         override suspend fun int(): Int = readLock.withLock {
-            channel.read(read, setReadMark, getReadMark, 4, ByteBuffer::getInt)
+            channel.read(read, setReadMark, getReadMark, 4, ByteBuffer::getInt, server, index, disconnectLock)
         }
         override suspend fun long(): Long = readLock.withLock {
-            channel.read(read, setReadMark, getReadMark, 8, ByteBuffer::getLong)
+            channel.read(read, setReadMark, getReadMark, 8, ByteBuffer::getLong, server, index, disconnectLock)
         }
         //TODO: make this one nio operation later
         override suspend fun bytes(amount: Int): ByteArray = readLock.withLock {
@@ -144,16 +171,16 @@ fun AsynchronousSocketChannel.connection(maxBuffer: Int = Short.MAX_VALUE.toInt(
             String(bytes(int()))
         }
         override suspend fun byte(value: Byte) = writeLock.withLock {
-            channel.write(write, ByteBuffer::put, value)
+            channel.write(write, ByteBuffer::put, value, server, index, disconnectLock)
         }
         override suspend fun short(value: Short) = writeLock.withLock {
-            channel.write(write, ByteBuffer::putShort, value)
+            channel.write(write, ByteBuffer::putShort, value, server, index, disconnectLock)
         }
         override suspend fun int(value: Int) = writeLock.withLock {
-            channel.write(write, ByteBuffer::putInt, value)
+            channel.write(write, ByteBuffer::putInt, value, server, index, disconnectLock)
         }
         override suspend fun long(value: Long) = writeLock.withLock {
-            channel.write(write, ByteBuffer::putLong, value)
+            channel.write(write, ByteBuffer::putLong, value, server, index, disconnectLock)
         }
         //TODO: make this one nio operation later
         override suspend fun bytes(value: ByteArray) = writeLock.withLock {
@@ -167,50 +194,67 @@ fun AsynchronousSocketChannel.connection(maxBuffer: Int = Short.MAX_VALUE.toInt(
 }
 
 interface Server {
-    val active: Int
+    val active: BitSet
     val connections: Array<Connection>
+    suspend fun forActive(block: suspend Connection.(Int) -> (Unit))
     suspend fun onConnect(block: suspend Connection.(Int) -> (Unit))
+    suspend fun onDisconnect(block: suspend (Int) -> (Unit))
 }
 
 //TODO: handle disconnecting
 suspend fun AsynchronousChannelGroup.server(
     address: InetSocketAddress,
-    max: Int = 256,
-    maxBuffer: Int = Short.MAX_VALUE.toInt()
-): Server {
-    val group = this
+    maxConnections: Int = 256,
+    maxBuffer: Int = Short.MAX_VALUE.toInt(),
+    block: suspend Server.() -> (Unit)
+) = coroutineScope {
+    val group = this@server
     val channel = withContext(Dispatchers.IO) {
         AsynchronousServerSocketChannel.open(group).bind(address)
     }
+    val connectLock = Mutex()
+    val disconnectLock = Mutex()
     val whenConnect = Collections.synchronizedList(ArrayList<suspend Connection.(Int) -> (Unit)>())
-    val active = AtomicInteger()
+    val whenDisconnect = Collections.synchronizedList(ArrayList<suspend (Int) -> (Unit)>())
     val server = object : Server {
-        override val active: Int get() = active.get()
-        override val connections = Array(max) { CONNECTION_STUB }
+        override val active = BitSet(maxConnections)
+        override val connections = Array(maxConnections) { CONNECTION_STUB }
+        override suspend fun forActive(block: suspend Connection.(Int) -> Unit) {
+            var idx = active.nextSetBit(0)
+            while (idx != -1) {
+                connections[idx].block(idx)
+                idx = active.nextSetBit(idx + 1)
+            }
+        }
         override suspend fun onConnect(block: suspend Connection.(Int) -> Unit) = whenConnect.plusAssign(block)
+        override suspend fun onDisconnect(block: suspend (Int) -> Unit) = whenDisconnect.plusAssign(block)
     }
-    CoroutineScope(Dispatchers.IO).launch {
-        while (isActive) {
-            suspendCoroutine { continuation ->
-                channel.accept(null, object : CompletionHandler<AsynchronousSocketChannel, Void?> {
-                    override fun completed(channel: AsynchronousSocketChannel, attachment: Void?) {
-                        server.connections[active.getAndIncrement()] = channel.connection(maxBuffer).also {
-                            continuation.resume(it)
-                        }
+    server.block()
+    while (isActive) {
+        val id = connectLock.withLock { server.active.nextClearBit(0) }
+        suspendCoroutine { continuation ->
+            channel.accept(null, object : CompletionHandler<AsynchronousSocketChannel, Void?> {
+                override fun completed(channel: AsynchronousSocketChannel, attachment: Void?) {
+                    println("$id connected????")
+                    server.connections[id] = channel.connection(maxBuffer, server, id, disconnectLock).also {
+                        continuation.resume(it)
                     }
-                    override fun failed(throwable: Throwable, attachment: Void?) {
-                        continuation.resumeWithException(throwable)
-                    }
-                })
-            }.apply { whenConnect.forEach { it(active.get() - 1) } }
+                }
+                override fun failed(throwable: Throwable, attachment: Void?) {
+                    continuation.resume(null)
+                }
+            })
+        }?.apply {
+            connectLock.withLock { server.active.set(id) }
+            whenConnect.forEach { it(id) }
         }
     }
-    return server
 }
 
 suspend fun AsynchronousChannelGroup.client(
     address: InetSocketAddress,
-    maxBuffer: Int = Short.MAX_VALUE.toInt()
+    maxBuffer: Int = Short.MAX_VALUE.toInt(),
+    block: suspend Connection.() -> (Unit)
 ) = suspendCoroutine {
     val channel = AsynchronousSocketChannel.open(this)
     channel.connect(address, it, object : CompletionHandler<Void?, Continuation<Connection>> {
@@ -219,4 +263,4 @@ suspend fun AsynchronousChannelGroup.client(
         override fun failed(throwable: Throwable, continuation: Continuation<Connection>) =
             continuation.resumeWithException(throwable)
     })
-}
+}.block()

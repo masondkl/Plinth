@@ -8,26 +8,26 @@ import kotlin.coroutines.coroutineContext
 import kotlin.time.Duration.Companion.INFINITE
 import kotlin.time.Duration.Companion.seconds
 
-suspend fun main() {
-    val address = InetSocketAddress("localhost", 9999)
-    val group = withContext(Dispatchers.IO) {
-        AsynchronousChannelGroup.withThreadPool(Executors.newCachedThreadPool())
-    }
-    CoroutineScope(coroutineContext).launch {
-        val server = group.server(address)
-        server.onConnect { id ->
-            println("result: ${int()}")
-        }
-    }
-    CoroutineScope(coroutineContext).launch {
-        delay(1.seconds)
-        val client = group.client(address)
-        client.short(0.toShort())
-        delay(5.seconds)
-        client.short(1.toShort())
-    }
-    delay(INFINITE)
-}
+//suspend fun main() {
+//    val address = InetSocketAddress("localhost", 9999)
+//    val group = withContext(Dispatchers.IO) {
+//        AsynchronousChannelGroup.withThreadPool(Executors.newCachedThreadPool())
+//    }
+//    CoroutineScope(coroutineContext).launch {
+//        val server = group.server(address)
+//        server.onConnect { id ->
+//            println("result: ${int()}")
+//        }
+//    }
+//    CoroutineScope(coroutineContext).launch {
+//        delay(1.seconds)
+//        val client = group.client(address)
+//        client.short(0.toShort())
+//        delay(5.seconds)
+//        client.short(1.toShort())
+//    }
+//    delay(INFINITE)
+//}
 
 //suspend fun main() {
 //    val address = InetSocketAddress("localhost", 9999)
