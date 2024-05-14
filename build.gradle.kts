@@ -3,7 +3,7 @@ plugins {
     id("org.gradle.maven-publish")
 }
 
-group = "me.mason"
+group = "com.github.masondkl.plinth"
 version = "1.0"
 
 repositories {

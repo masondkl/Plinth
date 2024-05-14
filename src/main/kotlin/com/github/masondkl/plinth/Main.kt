@@ -1,4 +1,4 @@
-package me.mason.plinth
+package com.github.masondkl.plinth
 
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
