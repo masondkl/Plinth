@@ -1,12 +1,11 @@
 package com.github.masondkl.plinth
 
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.consumeEach
+import kotlinx.coroutines.launch
 import java.nio.ByteBuffer
 import java.nio.charset.Charset
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicReference
 
 suspend fun Write.string(value: String, charset: Charset = Charsets.UTF_8) {
     val bytes = value.toByteArray(charset)
@@ -33,6 +32,6 @@ fun ByteBuffer.getString(charset: Charset = Charsets.UTF_8): String? {
 }
 
 suspend fun Connection.dispatchWrites(dispatcher: CoroutineDispatcher) = CoroutineScope(dispatcher).launch {
-    try { channel.consumeEach { yield(); it() } }
+    try { channel.consumeEach { it() } }
     catch (_: Throwable) { }
 }

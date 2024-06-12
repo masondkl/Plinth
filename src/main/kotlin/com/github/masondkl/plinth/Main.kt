@@ -196,11 +196,9 @@ class BufferedWrite(size: Int) : Write {
     override suspend fun bytes(value: ByteArray) {
         buffer.put(value)
     }
-
     override suspend fun bytes(value: CharArray) {
         value.forEach { buffer.put(it.code.toByte()) }
     }
-
     override suspend fun buffer(value: ByteBuffer) {
         buffer.put(value)
     }
@@ -208,6 +206,8 @@ class BufferedWrite(size: Int) : Write {
 
 interface Connection : Read, Write {
     val open: AtomicBoolean
+    val local: InetSocketAddress
+    val remote: InetSocketAddress
     val socketChannel: AsynchronousSocketChannel
     val channel: Channel<suspend Write.() -> (Unit)>
     var readMark: Int
@@ -229,6 +229,10 @@ fun AsynchronousSocketChannel.connection(
     val open = AtomicBoolean(true)
     val connection = object : Connection {
         override var open = open
+        override val local: InetSocketAddress
+            get() = channel.localAddress as InetSocketAddress
+        override val remote: InetSocketAddress
+            get() = channel.remoteAddress as InetSocketAddress
         override val socketChannel = channel
         override val channel = Channel<suspend Write.() -> Unit>(UNLIMITED)
         override var readMark = 0
