@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "com.github.masondkl.plinth"
-version = "1.0.0"
+version = "1.0.1"
 
 repositories {
     mavenCentral()
@@ -19,7 +19,7 @@ publishing {
         create<MavenPublication>("maven") {
             groupId = "com.github.masondkl.plinth"
             artifactId = "Plinth"
-            version = "1.0.0"
+            version = "1.0.1"
             from(components["java"])
         }
     }
